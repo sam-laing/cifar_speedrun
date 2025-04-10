@@ -1,1 +1,7 @@
 /logs
+logs/
+*.pt
+__pycache__/
+/pycache__
+*pyc
+*.cpython-*
