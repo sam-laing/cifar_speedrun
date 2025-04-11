@@ -26,7 +26,9 @@ def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
     return X
 
 class Muon(torch.optim.Optimizer):
-    def __init__(self, params, lr=1e-3, momentum=0, nesterov=False):
+    def __init__(
+            self, params, lr=1e-3, momentum=0, nesterov=False, steps=3, eps=1e-7
+            ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if momentum < 0.0:

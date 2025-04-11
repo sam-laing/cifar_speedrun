@@ -1,0 +1,15 @@
+LOGS_DIR=/lustre/home/slaing/cifar_speedrun/logs 
+executable=/lustre/home/slaing/cifar_speedrun/cluster/condor/run.sh  
+
+# logs
+error = $(LOGS_DIR)/err/job.$(Cluster).$(Process).err
+output = $(LOGS_DIR)/out/job.$(Cluster).$(Process).out
+log = $(LOGS_DIR)/log/job.$(Cluster).$(Process).log
+
+# Resource requirements
+request_cpus = 4
+request_memory = 20000
+request_gpus = 1
+requirements = TARGET.CUDADeviceName=="NVIDIA A100-SXM4-40GB"
+
+queue 

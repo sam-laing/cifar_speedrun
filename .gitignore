@@ -5,3 +5,5 @@ __pycache__/
 /pycache__
 *pyc
 *.cpython-*
+/plots
+plots/

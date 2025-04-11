@@ -27,13 +27,15 @@ from utils import (
 ############################################
 #                Training                  #
 ############################################
-def main(run, model):
+def main(
+        run, model,
+        newtonschulz_steps=5):
     batch_size = 2000
     bias_lr = 0.053
     head_lr = 0.67
     wd = 2e-6 * batch_size
 
-    path = "fast/slaing/data/vision/cifar10"
+    path = "/fast/slaing/data/vision/cifar10/"
     test_loader = CifarLoader(path, train=False, batch_size=2000)
     train_loader = CifarLoader(path, train=True, batch_size=batch_size, aug=dict(flip=True, translate=2))
     if run == "warmup":
@@ -43,13 +45,27 @@ def main(run, model):
     whiten_bias_train_steps = ceil(3 * len(train_loader))
 
     # Create optimizers and learning rate schedulers
-    filter_params = [p for p in model.parameters() if len(p.shape) == 4 and p.requires_grad]
-    norm_biases = [p for n, p in model.named_parameters() if "norm" in n and p.requires_grad]
-    param_configs = [dict(params=[model.whiten.bias], lr=bias_lr, weight_decay=wd/bias_lr),
-                     dict(params=norm_biases,         lr=bias_lr, weight_decay=wd/bias_lr),
-                     dict(params=[model.head.weight], lr=head_lr, weight_decay=wd/head_lr)]
-    optimizer1 = torch.optim.SGD(param_configs, momentum=0.85, nesterov=True, fused=True)
-    optimizer2 = Muon(filter_params, lr=0.24, momentum=0.6, nesterov=True)
+    filter_params = [
+        p for p in model.parameters() if len(p.shape) == 4 and p.requires_grad
+        ]
+    
+    norm_biases = [
+        p for n, p in model.named_parameters() if "norm" in n and p.requires_grad
+        ]
+    
+    param_configs = [
+        dict(params=[model.whiten.bias], lr=bias_lr, weight_decay=wd/bias_lr),
+        dict(params=norm_biases,         lr=bias_lr, weight_decay=wd/bias_lr),
+        dict(params=[model.head.weight], lr=head_lr, weight_decay=wd/head_lr)
+        ]
+    
+    optimizer1 = torch.optim.SGD(
+        param_configs, momentum=0.85, nesterov=True, fused=True
+        )
+    optimizer2 = Muon(
+        filter_params, lr=0.24, momentum=0.6, nesterov=True, 
+        steps=newtonschulz_steps, eps=1e-7
+        )
     optimizers = [optimizer1, optimizer2]
     for opt in optimizers:
         for group in opt.param_groups:
@@ -132,11 +148,42 @@ if __name__ == "__main__":
 
     print_columns(logging_columns_list, is_head=True)
     main("warmup", model)
-    accs = torch.tensor([main(run, model) for run in range(5)])
-    print("Mean: %.4f    Std: %.4f" % (accs.mean(), accs.std()))
 
+
+    acc_dict = {} # keyed by newtonschulz_steps, values are lists of accuracies/std dev
+    for ns_steps in range(1,50):
+        print("Newton-Schulz steps: %d" % ns_steps)
+        accs = torch.tensor([main(run, model, newtonschulz_steps=ns_steps) for run in range(20)])
+        print("Mean: %.4f    Std: %.4f" % (accs.mean(), accs.std()))
+        acc_dict[ns_steps] = accs.mean().item(), accs.std().item()
+
+    # create a plot of the results
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    x = np.array(list(acc_dict.keys()))
+    y = np.array([acc_dict[k][0] for k in x])
+    yerr = np.array([acc_dict[k][1] for k in x])
+    plt.errorbar(x, y, yerr=yerr, fmt="o")
+    plt.xticks(x)
+    plt.xlabel("Newton-Schulz steps")
+    plt.ylabel("Accuracy")
+    plt.title("Accuracy vs. Newton-Schulz steps")
+    plt.grid()
+    plots_dir = "./plots"
+    os.makedirs(plots_dir, exist_ok=True)
+    
+    plt.savefig(os.path.join(plots_dir, "muon_accuracy_vs_steps_long.png"))
+    plt.close()
+  
+    """
+    # no need to log model etc 
     log_dir = os.path.join("logs", str(uuid.uuid4()))
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "log.pt")
     torch.save(dict(code=code, accs=accs), log_path)
     print(os.path.abspath(log_path))
+    
+    """  
+
+    
