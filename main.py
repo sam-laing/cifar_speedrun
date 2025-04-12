@@ -153,9 +153,16 @@ if __name__ == "__main__":
     acc_dict = {} # keyed by newtonschulz_steps, values are lists of accuracies/std dev
     for ns_steps in range(1,50):
         print("Newton-Schulz steps: %d" % ns_steps)
-        accs = torch.tensor([main(run, model, newtonschulz_steps=ns_steps) for run in range(20)])
+        accs = torch.tensor([main(run, model, newtonschulz_steps=ns_steps) for run in range(10)])
         print("Mean: %.4f    Std: %.4f" % (accs.mean(), accs.std()))
         acc_dict[ns_steps] = accs.mean().item(), accs.std().item()
+
+    # save the results to a file
+    import json
+    import os
+    #save acc_dict to a json file
+    with open("/home/slaing/cifar_speedrun/plots/accs_dict.json", "w") as f:
+        json.dump(acc_dict, f)
 
     # create a plot of the results
     import matplotlib.pyplot as plt
@@ -170,10 +177,10 @@ if __name__ == "__main__":
     plt.ylabel("Accuracy")
     plt.title("Accuracy vs. Newton-Schulz steps")
     plt.grid()
-    plots_dir = "./plots"
+    plots_dir = "/home/slaing/cifar_speedrun/plots/"
     os.makedirs(plots_dir, exist_ok=True)
     
-    plt.savefig(os.path.join(plots_dir, "muon_accuracy_vs_steps_long.png"))
+    plt.savefig(os.path.join(plots_dir, "muon_accuracy_vs_steps_fixed.png"))
     plt.close()
   
     """

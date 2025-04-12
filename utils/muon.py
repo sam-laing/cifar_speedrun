@@ -25,9 +25,47 @@ def zeropower_via_newtonschulz5(G, steps=3, eps=1e-7):
         X = X.T
     return X
 
+@torch.compile
+def get_svd(G, eps=1e-7):
+    """
+    Compute the SVD of G using torch.linalg.svd. This is a wrapper around the function to ensure
+    that we can use it with torch.compile.
+    """
+    X = G.bfloat16()
+    X /= (X.norm() + eps) # ensure top singular value <= 1
+
+    
+    if len(G.shape) == 1:
+        #throw error
+        raise ValueError("G is a vector, cannot compute SVD")
+    elif len(G.shape) == 2:
+        # G is a matrix
+        if G.size(0) > G.size(1):
+            G = G.T
+        U, S, Vh = torch.linalg.svd(G, full_matrices=False)
+        S = S.unsqueeze(0)
+        return U, S, Vh
+    else:
+        #squeeze dimensions 1,...,N into one 
+        # G is a tensor
+        G = G.view(G.size(0), -1)
+    
+        if G.size(0) > G.size(1):
+            G = G.T
+        U, S, Vh = torch.linalg.svd(G, full_matrices=False)
+        S = S.unsqueeze(0)
+        return U, S, Vh
+    
+
+
+
+
+
+
+
 class Muon(torch.optim.Optimizer):
     def __init__(
-            self, params, lr=1e-3, momentum=0, nesterov=False, steps=3, eps=1e-7
+            self, params, lr=1e-3, momentum=0, nesterov=False, steps=3, eps=1e-7, orthogonalize=False
             ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -36,6 +74,9 @@ class Muon(torch.optim.Optimizer):
         if nesterov and momentum <= 0:
             raise ValueError("Nesterov momentum requires a momentum")
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov)
+        self.steps = steps
+        self.orthogonalize = orthogonalize
+        self.eps = eps
         super().__init__(params, defaults)
 
     def step(self):
@@ -55,5 +96,8 @@ class Muon(torch.optim.Optimizer):
                 g = g.add(buf, alpha=momentum) if group["nesterov"] else buf
 
                 p.data.mul_(len(p.data)**0.5 / p.data.norm()) # normalize the weight
-                update = zeropower_via_newtonschulz5(g.reshape(len(g), -1)).view(g.shape) # whiten the update
+                if self.orthogonalize:
+                    U, S, Vh = get_svd(g)
+                    
+                update = zeropower_via_newtonschulz5(g.reshape(len(g), -1), steps=self.steps).view(g.shape) # whiten the update
                 p.data.add_(update, alpha=-lr) # take a step
