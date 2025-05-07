@@ -8,6 +8,8 @@ understanding the dynamics of the muon optimizer
 #############################################
 
 import os
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+
 import sys
 with open(sys.argv[0]) as f:
     code = f.read()
@@ -19,6 +21,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 torch.backends.cudnn.benchmark = True
+torch.use_deterministic_algorithms(True)  
 
 
 from utils import (
@@ -29,6 +32,10 @@ from utils import (
 ############################################
 #                Training                  #
 ############################################
+
+
+
+
 def main(
         run, model,
         newtonschulz_steps=5,
@@ -46,14 +53,19 @@ def main(
         np.random.seed(seed)
 
 
-
-
-
     path = "/fast/slaing/data/vision/cifar10/"
     test_loader = CifarLoader(path, train=False, batch_size=2000, seed=seed)
     train_loader = CifarLoader(
         path, train=True, batch_size=batch_size, 
         aug=dict(flip=True, translate=2), seed=seed)
+    
+    if run == "warmup":
+        generator = torch.Generator(device=train_loader.labels.device)
+        generator.manual_seed(seed if seed is not None else 0)
+        train_loader.labels = torch.randint(0, 10, size=(len(train_loader.labels),), 
+                                        device=train_loader.labels.device,
+                                        generator=generator)
+
     if run == "warmup":
         # The only purpose of the first run is to warmup the compiled model, so we can use dummy data
         train_loader.labels = torch.randint(0, 10, size=(len(train_loader.labels),), device=train_loader.labels.device)
@@ -153,6 +165,8 @@ def main(
 
     return tta_val_acc
 
+
+
 if __name__ == "__main__":
     import torch._dynamo
     torch._dynamo.config.suppress_errors = True
@@ -169,7 +183,7 @@ if __name__ == "__main__":
 
 
     acc_dict = {} # keyed by newtonschulz_steps, values are lists of accuracies/std dev
-    for ns_steps in range(0,50):
+    for ns_steps in range(0, 5):
         print("Newton-Schulz steps: %d" % ns_steps)
         accs = torch.tensor([
             main(run, model, newtonschulz_steps=ns_steps, seed=base_seed+run) 
@@ -183,7 +197,7 @@ if __name__ == "__main__":
     import json
     import os
     #save acc_dict to a json file
-    with open(f"/home/slaing/cifar_speedrun/plots/accs_dict_{base_seed}.json", "w") as f:
+    with open(f"/home/slaing/cifar_speedrun/plots/det_accs_dict_{base_seed}.json", "w") as f:
         json.dump(acc_dict, f)
 
     # create a plot of the results
