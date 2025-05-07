@@ -26,9 +26,9 @@ from utils import (
     Muon, zeropower_via_newtonschulz5,
     print_columns, print_training_details, evaluate, logging_columns_list
 )
-############################################
-#                Training                  #
-############################################
+
+ORTHOGONALIZE = True
+
 def main(
         run, model,
         newtonschulz_steps=5,
@@ -80,7 +80,7 @@ def main(
         )
     optimizer2 = Muon(
         filter_params, lr=0.24, momentum=0.6, nesterov=True, 
-        steps=newtonschulz_steps, eps=1e-7
+        steps=newtonschulz_steps, eps=1e-7, orthogonalize=ORTHOGONALIZE
         )
     optimizers = [optimizer1, optimizer2]
     for opt in optimizers:
@@ -162,48 +162,20 @@ if __name__ == "__main__":
     model = CifarNet().cuda().to(memory_format=torch.channels_last)
     model.compile(mode="max-autotune")
 
-    base_seed = 99
+    base_seed = 45
     print_columns(logging_columns_list, is_head=True)
     main("warmup", model, seed=base_seed)
-    
 
 
-    acc_dict = {} # keyed by newtonschulz_steps, values are lists of accuracies/std dev
-    for ns_steps in range(0,50):
-        print("Newton-Schulz steps: %d" % ns_steps)
-        accs = torch.tensor([
-            main(run, model, newtonschulz_steps=ns_steps, seed=base_seed+run) 
-            for run in range(10)
-        ])
-        print("Mean: %.4f    Std: %.4f" % (accs.mean(), accs.std()))
-        acc_dict[ns_steps] = accs.mean().item(), accs.std().item()
-    
 
-    # save the results to a file
-    import json
-    import os
-    #save acc_dict to a json file
-    with open(f"/home/slaing/cifar_speedrun/plots/accs_dict_{base_seed}.json", "w") as f:
-        json.dump(acc_dict, f)
+    accs = torch.tensor([
+        main(run, model, newtonschulz_steps=0, seed=base_seed+run) for run in range(10)
+    ])
+    print(f"Accuracy {accs.mean()}, std {accs.std()}")
 
-    # create a plot of the results
-    import matplotlib.pyplot as plt
-    import numpy as np
 
-    x = np.array(list(acc_dict.keys()))
-    y = np.array([acc_dict[k][0] for k in x])
-    yerr = np.array([acc_dict[k][1] for k in x])
-    plt.errorbar(x, y, yerr=yerr, fmt="o")
-    plt.xticks(x)
-    plt.xlabel("Newton-Schulz steps")
-    plt.ylabel("Accuracy")
-    plt.title("Accuracy vs. Newton-Schulz steps")
-    plt.grid()
-    plots_dir = "/home/slaing/cifar_speedrun/plots/"
-    os.makedirs(plots_dir, exist_ok=True)
-    
-    plt.savefig(os.path.join(plots_dir, f"muon_accuracy_vs_steps_fixed_seed{base_seed}.png"))
-    plt.close()
+
+
   
     """
     # no need to log model etc 
