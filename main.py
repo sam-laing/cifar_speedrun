@@ -35,11 +35,24 @@ from utils import (
 
 
 
+def _get_model_weights(model)-> dict:
+    """
+    get the weights of each layer in the model and put into dict
+    """
+    weights = {}
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            weights[name] = param.data
+            
+    return weights
 
 def main(
         run, model,
         newtonschulz_steps=5,
-        seed=None
+        seed=None, 
+        store_weights=False,
+        sgd_momentum=0.85,
+        muon_momentum=0.6
         ):
     batch_size = 2000
     bias_lr = 0.053
@@ -88,11 +101,11 @@ def main(
         ]
     
     optimizer1 = torch.optim.SGD(
-        param_configs, momentum=0.85, nesterov=True, fused=True
+        param_configs, momentum=sgd_momentum, nesterov=True, fused=True
         )
     optimizer2 = Muon(
-        filter_params, lr=0.24, momentum=0.6, nesterov=True, 
-        steps=newtonschulz_steps, eps=1e-7
+        filter_params, lr=0.24, momentum=muon_momentum, nesterov=True, 
+        steps=newtonschulz_steps, eps=1e-7, individual_ns=True, model=model, orthogonalize=False
         )
     optimizers = [optimizer1, optimizer2]
     for opt in optimizers:
@@ -119,7 +132,23 @@ def main(
     train_images = train_loader.normalize(train_loader.images[:5000])
     model.init_whiten(train_images)
     stop_timer()
+    
+    if store_weights:
+        # have _get_model_weights
+        dir_name = f"/fast/slaing/muon_state/{newtonschulz_steps}-{seed}/"
+        if not os.path.exists(dir_name):
+            os.makedirs(dir_name, exist_ok=True)
+        
+        #store the model weights at this step in the dir
+        to_store = _get_model_weights(model)
+        store_path = os.path.join(dir_name, f"weights_{step}.pth")
+        torch.save(to_store, store_path)
 
+        
+        total_step = 0
+    
+    step_count = 0
+    moment_path = "/fast/slaing/muon_state/moments/"
     for epoch in range(ceil(total_train_steps / len(train_loader))):
 
         ####################
@@ -129,6 +158,7 @@ def main(
         start_timer()
         model.train()
         for inputs, labels in train_loader:
+            step_count += 1
             outputs = model(inputs, whiten_bias_grad=(step < whiten_bias_train_steps))
             F.cross_entropy(outputs, labels, label_smoothing=0.2, reduction="sum").backward()
             for group in optimizer1.param_groups[:1]:
@@ -137,7 +167,26 @@ def main(
                 group["lr"] = group["initial_lr"] * (1 - step / total_train_steps)
             for opt in optimizers:
                 opt.step()
+                """  
+                if isinstance(opt, Muon) and step_count % 100 == 1 and run != "warmup":
+                    opt.step(get_moments=True)
+                    moment_dict = opt.get_moments()
+                    #dump the moments to a file
+                    moment_save_path = os.path.join( 
+                        moment_path, f"moments_ns={newtonschulz_steps}-seed={seed}-step={step_count}.pth")
+                    print(f"step count {step_count}: dumping moments to {moment_save_path}")
+                    torch.save(moment_dict, moment_save_path)
+                else:
+                    opt.step()
+
+                """  
             model.zero_grad(set_to_none=True)
+            if store_weights:
+                total_step += 1
+                #store the weights of the model at step t
+                to_store = _get_model_weights(model)
+                store_path = os.path.join(dir_name, f"weights_{total_step}.pth")
+                torch.save(to_store, store_path)
             step += 1
             if step >= total_train_steps:
                 break
@@ -152,6 +201,9 @@ def main(
         val_acc = evaluate(model, test_loader, tta_level=0)
         print_training_details(locals(), is_final_entry=False)
         run = None # Only print the run number once
+
+
+
 
     ####################
     #  TTA Evaluation  #
@@ -176,22 +228,40 @@ if __name__ == "__main__":
     model = CifarNet().cuda().to(memory_format=torch.channels_last)
     model.compile(mode="max-autotune")
 
-    base_seed = 99
+    base_seed = 43
     print_columns(logging_columns_list, is_head=True)
     main("warmup", model, seed=base_seed)
-    
-
 
     acc_dict = {} # keyed by newtonschulz_steps, values are lists of accuracies/std dev
-    for ns_steps in range(0, 5):
+    for ns_steps in [11, 12, 13, 14, 15, 16, 17, 18, 19, 20]:
         print("Newton-Schulz steps: %d" % ns_steps)
         accs = torch.tensor([
-            main(run, model, newtonschulz_steps=ns_steps, seed=base_seed+run) 
-            for run in range(10)
+            main(run, model, newtonschulz_steps=ns_steps, seed=base_seed+run, store_weights=True) 
+            for run in range(5)
         ])
-        print("Mean: %.4f    Std: %.4f" % (accs.mean(), accs.std()))
-        acc_dict[ns_steps] = accs.mean().item(), accs.std().item()
+        #print("Mean: %.4f    Std: %.4f" % (accs.mean(), accs.std()))
+        print(f"accuracy {accs[0]}")
+        acc_dict[ns_steps] = accs.mean().item(), accs.std().item() if accs.numel() > 1 else 0.0
     
+    import json
+    import os
+    #save acc_dict to a json file
+    print("the file is saving....")
+    with open(f"/home/slaing/cifar_speedrun/plots/ns_before_mom_{base_seed}.json", "w") as f:
+        json.dump(acc_dict, f)
+    print("saved to /home/slaing/cifar_speedrun/plots/ns_before_mom_{base_seed}.json")
+    
+    """
+    acc_dict = {}
+    for ns_steps in [3,4,5]:
+        print("Newton-Schulz steps: %d" % ns_steps)
+        #just a single run for each with store_weights = True
+        acc = main(0, model, newtonschulz_steps=ns_steps, seed=base_seed+0, store_weights=True)
+
+        print(f"accuracy {acc}")
+        acc_dict[ns_steps] = acc.item(), 0.0 # no std dev for single run
+    
+
 
     # save the results to a file
     import json
@@ -219,7 +289,6 @@ if __name__ == "__main__":
     plt.savefig(os.path.join(plots_dir, f"muon_accuracy_vs_steps_fixed_seed{base_seed}.png"))
     plt.close()
   
-    """
     # no need to log model etc 
     log_dir = os.path.join("logs", str(uuid.uuid4()))
     os.makedirs(log_dir, exist_ok=True)

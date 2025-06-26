@@ -8,6 +8,8 @@ understanding the dynamics of the muon optimizer
 #############################################
 
 import os
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+
 import sys
 with open(sys.argv[0]) as f:
     code = f.read()
@@ -19,6 +21,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 torch.backends.cudnn.benchmark = True
+torch.use_deterministic_algorithms(True)  
 
 
 from utils import (
@@ -26,13 +29,28 @@ from utils import (
     Muon, zeropower_via_newtonschulz5,
     print_columns, print_training_details, evaluate, logging_columns_list
 )
+############################################
+#                Training                  #
+############################################
 
-ORTHOGONALIZE = True
+
+
+def _get_model_weights(model)-> dict:
+    """
+    get the weights of each layer in the model and put into dict
+    """
+    weights = {}
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            weights[name] = param.data
+            
+    return weights
 
 def main(
         run, model,
         newtonschulz_steps=5,
-        seed=None
+        seed=None, 
+        store_weights=False
         ):
     batch_size = 2000
     bias_lr = 0.053
@@ -46,14 +64,19 @@ def main(
         np.random.seed(seed)
 
 
-
-
-
     path = "/fast/slaing/data/vision/cifar10/"
     test_loader = CifarLoader(path, train=False, batch_size=2000, seed=seed)
     train_loader = CifarLoader(
         path, train=True, batch_size=batch_size, 
         aug=dict(flip=True, translate=2), seed=seed)
+    
+    if run == "warmup":
+        generator = torch.Generator(device=train_loader.labels.device)
+        generator.manual_seed(seed if seed is not None else 0)
+        train_loader.labels = torch.randint(0, 10, size=(len(train_loader.labels),), 
+                                        device=train_loader.labels.device,
+                                        generator=generator)
+
     if run == "warmup":
         # The only purpose of the first run is to warmup the compiled model, so we can use dummy data
         train_loader.labels = torch.randint(0, 10, size=(len(train_loader.labels),), device=train_loader.labels.device)
@@ -80,7 +103,7 @@ def main(
         )
     optimizer2 = Muon(
         filter_params, lr=0.24, momentum=0.6, nesterov=True, 
-        steps=newtonschulz_steps, eps=1e-7, orthogonalize=ORTHOGONALIZE
+        steps=newtonschulz_steps, eps=1e-7
         )
     optimizers = [optimizer1, optimizer2]
     for opt in optimizers:
@@ -107,6 +130,20 @@ def main(
     train_images = train_loader.normalize(train_loader.images[:5000])
     model.init_whiten(train_images)
     stop_timer()
+    
+    if store_weights:
+        # have _get_model_weights
+        dir_name = f"/fast/slaing/muon_state/{newtonschulz_steps}-{seed}/"
+        if not os.path.exists(dir_name):
+            os.makedirs(dir_name, exist_ok=True)
+        
+        #store the model weights at this step in the dir
+        to_store = _get_model_weights(model)
+        store_path = os.path.join(dir_name, f"weights_{step}.pth")
+        torch.save(to_store, store_path)
+
+        
+        total_step = 0
 
     for epoch in range(ceil(total_train_steps / len(train_loader))):
 
@@ -126,6 +163,12 @@ def main(
             for opt in optimizers:
                 opt.step()
             model.zero_grad(set_to_none=True)
+            if store_weights:
+                total_step += 1
+                #store the weights of the model at step t
+                to_store = _get_model_weights(model)
+                store_path = os.path.join(dir_name, f"weights_{total_step}.pth")
+                torch.save(to_store, store_path)
             step += 1
             if step >= total_train_steps:
                 break
@@ -141,6 +184,9 @@ def main(
         print_training_details(locals(), is_final_entry=False)
         run = None # Only print the run number once
 
+
+
+
     ####################
     #  TTA Evaluation  #
     ####################
@@ -152,6 +198,8 @@ def main(
     print_training_details(locals(), is_final_entry=True)
 
     return tta_val_acc
+
+
 
 if __name__ == "__main__":
     import torch._dynamo
@@ -165,19 +213,59 @@ if __name__ == "__main__":
     base_seed = 99
     print_columns(logging_columns_list, is_head=True)
     main("warmup", model, seed=base_seed)
+    
 
-
-
-    accs = torch.tensor([
-        main(run, model, newtonschulz_steps=0, seed=base_seed+run) for run in range(10)
-    ])
-    print(f"Accuracy {accs.mean()}, std {accs.std()}")
-
-
-
-
-  
     """
+    acc_dict = {} # keyed by newtonschulz_steps, values are lists of accuracies/std dev
+    for ns_steps in [3, 4, 5]:
+        print("Newton-Schulz steps: %d" % ns_steps)
+        accs = torch.tensor([
+            main(run, model, newtonschulz_steps=ns_steps, seed=base_seed+run, store_weights=True) 
+            for run in range(1)
+        ])
+        #print("Mean: %.4f    Std: %.4f" % (accs.mean(), accs.std()))
+        print(f"accuracy {accs[0]}")
+        acc_dict[ns_steps] = accs.mean().item(), accs.std().item()
+    
+    """
+    acc_dict = {}
+    for ns_steps in [3,4,5]:
+        print("Newton-Schulz steps: %d" % ns_steps)
+        #just a single run for each with store_weights = True
+        acc = main(0, model, newtonschulz_steps=ns_steps, seed=base_seed+0, store_weights=True)
+
+        print(f"accuracy {acc}")
+        acc_dict[ns_steps] = acc.item(), 0.0 # no std dev for single run
+    
+
+
+    """
+    # save the results to a file
+    import json
+    import os
+    #save acc_dict to a json file
+    with open(f"/home/slaing/cifar_speedrun/plots/det_accs_dict_{base_seed}.json", "w") as f:
+        json.dump(acc_dict, f)
+
+    # create a plot of the results
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    x = np.array(list(acc_dict.keys()))
+    y = np.array([acc_dict[k][0] for k in x])
+    yerr = np.array([acc_dict[k][1] for k in x])
+    plt.errorbar(x, y, yerr=yerr, fmt="o")
+    plt.xticks(x)
+    plt.xlabel("Newton-Schulz steps")
+    plt.ylabel("Accuracy")
+    plt.title("Accuracy vs. Newton-Schulz steps")
+    plt.grid()
+    plots_dir = "/home/slaing/cifar_speedrun/plots/"
+    os.makedirs(plots_dir, exist_ok=True)
+    
+    plt.savefig(os.path.join(plots_dir, f"muon_accuracy_vs_steps_fixed_seed{base_seed}.png"))
+    plt.close()
+  
     # no need to log model etc 
     log_dir = os.path.join("logs", str(uuid.uuid4()))
     os.makedirs(log_dir, exist_ok=True)

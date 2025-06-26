@@ -72,85 +72,44 @@ def orthogonalise(G):
 
 
 
+
 class Muon(torch.optim.Optimizer):
     def __init__(
             self, params, lr=1e-3, momentum=0, nesterov=False, steps=3, eps=1e-7, 
-            orthogonalize=False, individual_ns=False, model = None):
+            orthogonalize=False
+            ):
         if lr < 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
         if momentum < 0.0:
             raise ValueError(f"Invalid momentum value: {momentum}")
         if nesterov and momentum <= 0:
             raise ValueError("Nesterov momentum requires a momentum")
-
         defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov)
         self.steps = steps
         self.orthogonalize = orthogonalize
-        self.individual_ns = individual_ns
         self.eps = eps
         super().__init__(params, defaults)
-        if model is not None:
-            self.model = model
-            self.layer_id2name = {id(layer): name for name, layer in model.named_modules()}
 
-    def step(self, get_gradients = False, get_moments=False):
-        if get_gradients:
-            self.gradients_dict = {}
-        if get_moments:
-            self.moments_dict = {}
-
+    def step(self, log_moments=False, log_gradients=False):
         for group in self.param_groups:
             lr = group["lr"]
             momentum = group["momentum"]
-            nesterov = group["nesterov"]
-
-
-
             for p in group["params"]:
-                if p.grad is None:
-                    continue
                 g = p.grad
-                if get_gradients:
-                    try:
-                        self.gradients_dict[self.layer_id2name[id(p)]] = g
-                    except KeyError:
-                        self.gradients_dict[id(p)] = g
-                    
+                if g is None:
+                    continue
                 state = self.state[p]
 
-                if "momentum_buffer" not in state:
+                if "momentum_buffer" not in state.keys():
                     state["momentum_buffer"] = torch.zeros_like(g)
-
                 buf = state["momentum_buffer"]
+                buf.mul_(momentum).add_(g)
+                g = g.add(buf, alpha=momentum) if group["nesterov"] else buf
 
-                if self.individual_ns:
-                    g_processed = zeropower_via_newtonschulz5(g.reshape(len(g), -1), steps=self.steps).reshape(g.shape)
-                else:
-                    g_processed = g
+                p.data.mul_(len(p.data)**0.5 / p.data.norm()) # normalize the weight
 
-
-                buf.mul_(momentum).add_(g_processed)
-                if get_moments:
-                    try:
-                        self.moments_dict[self.layer_id2name[id(p)]] = buf
-                    except KeyError:
-                        self.moments_dict[id(p)] = buf
-
-                if nesterov:
-                    update = g + momentum * buf
-                else:
-                    update = buf
-
-                if not self.individual_ns:
-                    if self.orthogonalize:
-                        update = orthogonalise(update.reshape(len(update), -1)).reshape(update.shape)
-                    else:
-                        update = zeropower_via_newtonschulz5(update.reshape(len(update), -1), steps=self.steps).reshape(update.shape)
-
-                p.data.add_(update, alpha=-lr)
-
-    def get_moments(self):
-        return self.moments_dict if hasattr(self, 'moments_dict') else None
-
-    def get_gradients(self):
-        return self.gradients_dict if hasattr(self, 'gradients_dict') else None
+                if self.orthogonalize:
+                    update= orthogonalise(g.reshape(len(g), -1)).view(g.shape) # orthogonalize the update
+                else:    
+                    update = zeropower_via_newtonschulz5(g.reshape(len(g), -1), steps=self.steps).view(g.shape) # whiten the update
+                p.data.add_(update, alpha=-lr) # take a step
