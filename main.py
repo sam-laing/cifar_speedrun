@@ -45,14 +45,14 @@ def _get_model_weights(model)-> dict:
             weights[name] = param.data
             
     return weights
-
+MUON_MOMENTUM = 0.9
 def main(
         run, model,
         newtonschulz_steps=5,
         seed=None, 
         store_weights=False,
         sgd_momentum=0.85,
-        muon_momentum=0.6
+        muon_momentum=MUON_MOMENTUM
         ):
     batch_size = 2000
     bias_lr = 0.053
@@ -105,7 +105,7 @@ def main(
         )
     optimizer2 = Muon(
         filter_params, lr=0.24, momentum=muon_momentum, nesterov=True, 
-        steps=newtonschulz_steps, eps=1e-7, individual_ns=True, model=model, orthogonalize=False
+        steps=newtonschulz_steps, eps=1e-7, individual_ns=True, model=model, orthogonalize=True
         )
     optimizers = [optimizer1, optimizer2]
     for opt in optimizers:
@@ -228,12 +228,12 @@ if __name__ == "__main__":
     model = CifarNet().cuda().to(memory_format=torch.channels_last)
     model.compile(mode="max-autotune")
 
-    base_seed = 43
+    base_seed = 999
     print_columns(logging_columns_list, is_head=True)
     main("warmup", model, seed=base_seed)
 
     acc_dict = {} # keyed by newtonschulz_steps, values are lists of accuracies/std dev
-    for ns_steps in [11, 12, 13, 14, 15, 16, 17, 18, 19, 20]:
+    for ns_steps in [1,2,3,4,5,6,7,8,9,10]:
         print("Newton-Schulz steps: %d" % ns_steps)
         accs = torch.tensor([
             main(run, model, newtonschulz_steps=ns_steps, seed=base_seed+run, store_weights=True) 
@@ -247,9 +247,9 @@ if __name__ == "__main__":
     import os
     #save acc_dict to a json file
     print("the file is saving....")
-    with open(f"/home/slaing/cifar_speedrun/plots/ns_before_mom_{base_seed}.json", "w") as f:
+    with open(f"/home/slaing/cifar_speedrun/plots/reverse_{base_seed}_mom={MUON_MOMENTUM}.json", "w") as f:
         json.dump(acc_dict, f)
-    print("saved to /home/slaing/cifar_speedrun/plots/ns_before_mom_{base_seed}.json")
+    print(f"saved to /home/slaing/cifar_speedrun/plots/reverse_{base_seed}_mom={MUON_MOMENTUM}.json")
     
     """
     acc_dict = {}

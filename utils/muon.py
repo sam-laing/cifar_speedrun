@@ -124,7 +124,11 @@ class Muon(torch.optim.Optimizer):
                 buf = state["momentum_buffer"]
 
                 if self.individual_ns:
-                    g_processed = zeropower_via_newtonschulz5(g.reshape(len(g), -1), steps=self.steps).reshape(g.shape)
+                    if self.orthogonalize:
+                        g_processed = orthogonalise(g.reshape(len(g), -1)).reshape(g.shape)
+                    else:
+                        # Apply zeropower_via_newtonschulz5 to the gradient
+                        g_processed = zeropower_via_newtonschulz5(g.reshape(len(g), -1), steps=self.steps).reshape(g.shape)
                 else:
                     g_processed = g
 
